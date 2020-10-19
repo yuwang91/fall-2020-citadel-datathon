@@ -1,0 +1,300 @@
+---
+title: "Citadel Datathon"
+author: ""
+date: "30/09/2020"
+output: pdf_document
+---
+
+## How to predict success before making any part of the movie. What should the studio fund?
+
+```{r}
+indDat <- read.csv("movie_industry.csv",header=TRUE)
+indDat$PercentReturn <- ((indDat$gross)/indDat$budget)*100
+## Plot Percent Return
+t <- read.csv("movie_industry.csv",header=TRUE)
+t$PercentReturn <- ((t$gross)/t$budget)*100
+t <- t[t$PercentReturn<594.1333,]
+p1 <- ggplot(t, aes(x=PercentReturn)) + geom_histogram(fill="darkblue") + xlab("Percent Return") + theme_bw()
+## Log transform Percent Return
+indDat$PercentReturn <- log(indDat$PercentReturn+1)
+t2 <- indDat
+## Reformat release dates
+indDat$released <- as.Date(indDat$released,format="%Y-%m-%d")
+indDat <- indDat[order(indDat$released),]
+### Remove movies with no budget data. This removes 2182 movies
+indDat <- indDat[indDat$budget !=0,]
+### Remove 10 movies with no release date
+indDat <- indDat[!is.na(indDat$released),]
+### Make the Years correct this corrects 712 years
+indDat$year <- as.numeric(format(indDat$released,"%Y"))
+
+### Calculate max profit score of each director = highest %return obtained in all previous movies and average profit score = average %return in all previous movies. If no previous movies exist then gives the director a profit score = avg percent profit of all movies produced prior to the current movie. Then do same for actors and writers
+
+indDat$MaxDirectScore <- rep(0,nrow(indDat))
+indDat$AvgDirectScore <- rep(0,nrow(indDat))
+for(i in 2:nrow(indDat)){
+  if(indDat$year[i] > 1990){
+    if(length(indDat$PercentReturn[1:(i-1)][indDat$director[1:(i-1)] == indDat$director[i]])>0){
+      indDat$MaxDirectScore[i] <- max(indDat$PercentReturn[1:(i-1)][indDat$director[1:(i-1)] == indDat$director[i]])
+       indDat$AvgDirectScore[i] <- mean(indDat$PercentReturn[1:(i-1)][indDat$director[1:(i-1)] == indDat$director[i]])
+    }else{
+      indDat$MaxDirectScore[i] <- mean(indDat$PercentReturn[1:(i-1)][indDat$year[i] - indDat$year[1:(i-1)] <= 5])
+      indDat$AvgDirectScore[i] <-  mean(indDat$PercentReturn[1:(i-1)][indDat$year[i] - indDat$year[1:(i-1)] <= 5])
+    }
+  }
+}
+
+indDat$MaxStarScore <- rep(0,nrow(indDat))
+indDat$AvgStarScore <- rep(0,nrow(indDat))
+for(i in 2:nrow(indDat)){
+  if(indDat$year[i] > 1990){
+    if(length(indDat$PercentReturn[1:(i-1)][indDat$star[1:(i-1)] == indDat$star[i]])>0){
+      indDat$MaxStarScore[i] <- max(indDat$PercentReturn[1:(i-1)][indDat$star[1:(i-1)] == indDat$star[i]])
+      indDat$AvgStarScore[i] <- mean(indDat$PercentReturn[1:(i-1)][indDat$star[1:(i-1)] == indDat$star[i]])
+    }else{
+      indDat$MaxStarScore[i] <- mean(indDat$PercentReturn[1:(i-1)][indDat$year[i] - indDat$year[1:(i-1)] <= 5])
+      indDat$AvgStarScore[i] <- mean(indDat$PercentReturn[1:(i-1)][indDat$year[i] - indDat$year[1:(i-1)] <= 5])
+    }
+  }
+}
+
+indDat$MaxWriterScore <- rep(0,nrow(indDat))
+indDat$AvgWriterScore <- rep(0,nrow(indDat))
+for(i in 2:nrow(indDat)){
+  if(indDat$year[i] > 1990){
+    if(length(indDat$PercentReturn[1:(i-1)][indDat$writer[1:(i-1)] == indDat$writer[i]])>0){
+      indDat$MaxWriterScore[i] <- max(indDat$PercentReturn[1:(i-1)][indDat$writer[1:(i-1)] == indDat$writer[i]])
+      indDat$AvgWriterScore[i] <- mean(indDat$PercentReturn[1:(i-1)][indDat$writer[1:(i-1)] == indDat$writer[i]])
+    }else{
+      indDat$MaxWriterScore[i] <- mean(indDat$PercentReturn[1:(i-1)][indDat$year[i] - indDat$year[1:(i-1)] <= 5])
+      indDat$AvgWriterScore[i] <- mean(indDat$PercentReturn[1:(i-1)][indDat$year[i] - indDat$year[1:(i-1)] <= 5])
+    }
+  }
+}
+
+### Get quality score for actor director and writer. 0-1 valued measured as having previous oscar nomination
+
+oscarDat <- read.csv("the_oscar_award.csv",header=TRUE)
+
+indDat$DirectQual <- rep(0,nrow(indDat))
+directorCats <- c("DIRECTING (Comedy Picture)","DIRECTING (Dramatic Picture)","DIRECTING")
+for(i in 1:nrow(indDat)){
+  if(nrow(oscarDat[oscarDat$year_film<indDat$year[i] & oscarDat$name == indDat$director[i] & oscarDat$category %in% directorCats,])>0){
+    indDat$DirectQual[i] <- 1
+  }
+}
+
+indDat$ActorQual <- rep(0,nrow(indDat))
+actorCats <- c("ACTOR","ACTRESS","ACTOR IN A SUPPORTING ROLE","ACTRESS IN A SUPPORTING ROLE","ACTOR IN A LEADING ROLE","ACTRESS IN A LEADING ROLE")
+for(i in 1:nrow(indDat)){
+  if(nrow(oscarDat[oscarDat$year_film<indDat$year[i] & oscarDat$name == indDat$star[i] & oscarDat$category %in% actorCats,])>0){
+    indDat$ActorQual[i] <- 1
+  }
+}
+
+
+### Fit a model using RF
+
+indDatForRF <- indDat[indDat$year>1990,colnames(indDat) %in% c("budget","genre","rating","released","runtime","PercentReturn","AvgDirectScore","AvgStarScore","AvgWriterScore","MaxDirectScore","MaxStarScore","MaxWriterScore","DirectQual","ActorQual")]
+indDatForRF$released<-as.numeric(indDatForRF$released - indDatForRF$released[1])
+
+#indDatForRF$PercentReturn <- as.factor(indDatForRF$PercentReturn > 100)
+
+indDatForRF$PercentReturn <- log(indDatForRF$PercentReturn)
+
+library(randomForest)
+randomForest(y=indDatForRF$PercentReturn,x=model.matrix(lm(PercentReturn ~ ., data=indDatForRF))[,-6],importance=TRUE)
+
+### Try XGBoost
+
+library(xgboost)
+
+indDatForXG <- sparse.model.matrix(PercentReturn ~ .-1, data = indDatForRF)
+
+testSamp <- sample(1:nrow(indDatForXGTest),size=floor(0.1*nrow(indDatForXGTest)))
+indDatForXGTest <- indDatForXGTest[testSamp,]
+indDatForXGTrain <- indDatForXGTest[-testSamp,]
+
+xgb <- xgboost(data = data.matrix(indDatForXGTrain[,-1]), 
+ label = indDatForXGTrain[,1], 
+ eta = 0.1,
+ max_depth = 15, 
+ nround=25, 
+ subsample = 0.5,
+ colsample_bytree = 0.5,
+ seed = 1,
+ eval_metric = "rmse",
+ objective = "reg:squarederror",
+ num_class = 12,
+ nthread = 3
+)
+
+## Try lasso
+
+library(glmnet)
+indDatForRF <- indDatForRF[colnames(indDatForRF) != "AvgDirectScore"]
+XforLasso <- model.matrix(lm(PercentReturn ~ ., data=indDatForRF))
+XforLasso[,2] <- scale(XforLasso[,2])
+XforLasso[,25:31] <- scale(XforLasso[,25:31])
+
+indDatlasso <- cv.glmnet(y=indDatForRF$PercentReturn,x=XforLasso)
+
+# t <- read.csv("/Users/isaacgibbs/Downloads/movie_industry.csv",header=TRUE)
+# count<-0
+# for(i in 1:nrow(oscarDat)){
+#   if(oscarDat[i]$category=ACTOR | )
+#   if(oscarDat$film[i] %in% t$name){
+#     count <- count + 1
+#   }else if(oscarDat$year_ceremony[i] >= 1986){
+#     print(oscarDat$film[i])
+#   }
+# }
+# count
+
+
+## Figure construction
+library(ggplot2)
+
+indDatRec <- indDat[indDat$year>1990,]
+
+counts <- matrix(c(sum(indDatRec$DirectQual),sum(1-indDatRec$DirectQual),sum(indDatRec$ActorQual),sum(1-indDatRec$ActorQual)),nrow=2,ncol=2)
+colnames(counts) <- c("Direct. Qual.","Star Qual.")
+t3 <- table(indDatRec$genre)
+names(t3)<- ""
+names(t3)<- c("                                     Num. Movies Per Genre")
+
+barplot(counts,col=c("green","blue"),legend=c("1","0"),beside=TRUE,cex.lab=0.1)
+
+par(mfrow=c(2,2))
+hist(indDatRec$AvgStarScore,xlab= "Average Star Profit Score",col="darkred",main="")
+hist(indDatRec$PercentReturn,xlab= "log(PercentReturn + 1)",col="darkblue",main="")
+barplot(counts,col=c("mediumorchid4","darkorange"),legend=c("1","0"),beside=TRUE,cex.lab=0.1)
+barplot(t,col="darkgreen")
+
+### Plot actually used
+
+
+par(mfrow=c(1,3))
+hist(t$PercentReturn,xlab= "PercentReturn",col="darkblue",main="")
+hist(t2$PercentReturn,xlab= "log(PercentReturn + 1)",col="darkblue",main="")
+barplot(t3,col="darkgreen")
+
+##
+
+## Re-label some movies
+
+indDat$genre[indDat$genre=="Romance"] = "Drama"
+indDat$genre[indDat$genre=="Romance"] = "Drama"
+indDat$genre[indDat$genre=="Western"] = "Adventure"
+indDat$genre[indDat$genre=="Sci-Fi"] = "Adventure"
+indDat$genre[indDat$genre=="Thriller"] = "Action"
+```
+
+
+## Hypothesis testing and the time-series bootstrap
+
+```{r}
+
+constructFeatures <- function(indDattemp){
+indDattemp <- indDattemp[order(indDattemp$released),]
+
+indDattemp$MaxDirectScore <- rep(0,nrow(indDattemp))
+indDattemp$AvgDirectScore <- rep(0,nrow(indDattemp))
+for(i in 2:nrow(indDattemp)){
+  temp <- indDattemp[1:(i-1),][indDattemp$name[1:(i-1)]!=indDattemp$name[i],]
+  if(indDattemp$year[i] > 1990){
+    if(length(temp$PercentReturn[temp$director == indDattemp$director[i]])>0){
+      indDattemp$MaxDirectScore[i] <- max(temp$PercentReturn[temp$director == indDattemp$director[i]])
+       indDattemp$AvgDirectScore[i] <- mean(temp$PercentReturn[temp$director == indDattemp$director[i]])
+    }else{
+      indDattemp$MaxDirectScore[i] <- mean(temp$PercentReturn[indDattemp$year[i] - temp$year <= 5])
+      indDattemp$AvgDirectScore[i] <-  mean(temp$PercentReturn[indDattemp$year[i] - temp$year <= 5])
+    }
+  }
+}
+
+indDattemp$MaxStarScore <- rep(0,nrow(indDattemp))
+indDattemp$AvgStarScore <- rep(0,nrow(indDattemp))
+for(i in 2:nrow(indDattemp)){
+  temp <- indDattemp[1:(i-1),][indDattemp$name[1:(i-1)]!=indDattemp$name[i],]
+  if(indDattemp$year[i] > 1990){
+    if(length(temp$PercentReturn[temp$star == indDattemp$star[i]])>0){
+      indDattemp$MaxStarScore[i] <- max(temp$PercentReturn[temp$star == indDattemp$star[i]])
+      indDattemp$AvgStarScore[i] <- mean(temp$PercentReturn[temp$star == indDattemp$star[i]])
+    }else{
+      indDattemp$MaxStarScore[i] <- mean(temp$PercentReturn[indDattemp$year[i] - temp$year <= 5])
+      indDattemp$AvgStarScore[i] <- mean(temp$PercentReturn[indDattemp$year[i] - temp$year <= 5])
+    }
+  }
+}
+
+indDattemp$MaxWriterScore <- rep(0,nrow(indDattemp))
+indDattemp$AvgWriterScore <- rep(0,nrow(indDattemp))
+for(i in 2:nrow(indDattemp)){
+  temp <- indDattemp[1:(i-1),][indDattemp$name[1:(i-1)]!=indDattemp$name[i],]
+  if(indDattemp$year[i] > 1990){
+    if(length(temp$PercentReturn[temp$writer == indDattemp$writer[i]])>0){
+      indDattemp$MaxWriterScore[i] <- max(temp$PercentReturn[temp$writer == indDattemp$writer[i]])
+      indDattemp$AvgWriterScore[i] <- mean(temp$PercentReturn[temp$writer == indDattemp$writer[i]])
+    }else{
+      indDattemp$MaxWriterScore[i] <- mean(temp$PercentReturn[indDattemp$year[i] - temp$year <= 5])
+      indDattemp$AvgWriterScore[i] <- mean(temp$PercentReturn[indDattemp$year[i] - temp$year <= 5])
+    }
+  }
+}
+
+return(indDattemp)
+}
+
+indDat <- indDat[!(indDat$rating %in% c("NC-17","Not specified")) & indDat$genre != "Family",]
+
+indMod <- lm(PercentReturn ~ budget + genre + year + MaxDirectScore + AvgDirectScore + MaxStarScore+AvgStarScore+MaxWriterScore+ AvgWriterScore+DirectQual + ActorQual + rating, data=indDat[indDat$year>1990,])
+
+indCoef <- coef(indMod)
+indStdErrs <-  coef(summary(indMod))[,"Std. Error"]
+
+
+B=150
+start_time <- Sys.time()
+bootts <- matrix(1,nrow=B,ncol=length(indCoef))
+for(b in 1:B){
+  bootrows <- sample(1:(nrow(indDat)/26),nrow(indDat)/26,replace=TRUE)
+  bootrows <- as.vector(sapply(bootrows,function(x){(26*x-25):(26*x)}))
+  bootdat <- indDat[bootrows,]
+  bootdat <- constructFeatures(bootdat)
+  bootmod <- lm(PercentReturn ~ budget + genre + year + MaxDirectScore + AvgDirectScore + MaxStarScore+AvgStarScore+MaxWriterScore+ AvgWriterScore+DirectQual + ActorQual + rating,data=bootdat[bootdat$year>1990,])
+  bootcoefs <- coef(bootmod)
+  print(b)
+  bootStErrs <- coef(summary(bootmod))[,"Std. Error"]
+  bootts[b,] <- (bootcoefs-indCoef)/bootStErrs
+  if(length(indCoef)!=length(bootcoefs)){
+    print("-------------------------------------------------")
+    print(bootcoefs)
+    print("-------------------------------------------------")
+  }
+}
+end_time <- Sys.time()
+end_time-start_time
+
+bootConfInf <- matrix(nrow=length(indCoef),ncol=3)
+rownames(bootConfInf) <- names(indCoef)
+bootConfInf[,2] <- indCoef
+for(i in 1:length(indCoef)){
+  bootConfInf[i,3] <- indCoef[i] - quantile(bootts[,i],0.025)*indStdErrs[i] 
+  bootConfInf[i,1] <- indCoef[i] - quantile(bootts[,i],1-0.025)*indStdErrs[i]
+}
+bootConfInf
+
+
+#### Plotting CIs
+
+library(GGally)
+library(broom)
+
+temp <- as.data.frame(bootConfInf)
+temp <- cbind(temp,rownames(temp))
+temp <- temp[-1,]
+colnames(temp)<-c("conf.low","estimate","conf.high","term")
+temp<-temp[temp[,4] %in% c("DirectQual","ActorQual","AvgStarScore","AvgDirectScore","MaxStarScore","MaxDirectScore","AvgWriterScore","MaxWriterScore","genreComedy","genreFantasy","budget","ratingR"),]
+ggcoef(temp,vline_color = "red",errorbar_color = "blue", errorbar_height = .25) + coord_flip() + theme(text = element_text(size=25),axis.text.x = element_text(angle = 30))
+```
